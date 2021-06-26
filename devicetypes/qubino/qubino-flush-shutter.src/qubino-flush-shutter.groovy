@@ -12,6 +12,7 @@
  *	for the specific language governing permissions and limitations under the License.
  *
  */
+import groovy.json.JsonOutput
 
 metadata {
 	definition (name: "Qubino Flush Shutter", namespace: "qubino", author: "SmartThings", ocfDeviceType: "oic.d.blind", mcdSync: true) {
@@ -24,7 +25,9 @@ metadata {
 		capability "Configuration"
 
 		//zw:L type:1107 mfr:0159 prod:0003 model:0052 ver:1.01 zwv:4.05 lib:03 cc:5E,86,72,5A,73,20,27,25,26,32,60,85,8E,59,70 ccOut:20,26 epc:2
-		fingerprint mfr: "0159", prod: "0003", model: "0052", deviceJoinName: "Qubino Window Treatment"
+		fingerprint mfr: "0159", prod: "0003", model: "0052", deviceJoinName: "Qubino Window Treatment" // Qubino Flush Shutter (110-230 VAC)
+		//zw:L type:1107 mfr:0159 prod:0003 model:0053 ver:1.01 zwv:4.05 lib:03 cc:5E,86,72,5A,73,20,27,25,26,32,85,8E,59,70 ccOut:20,26
+		fingerprint mfr: "0159", prod: "0003", model: "0053", deviceJoinName: "Qubino Window Treatment" // Qubino Flush Shutter DC
 	}
 
 	tiles(scale: 2) {
@@ -90,7 +93,7 @@ def installed() {
 		state.currentPreferencesState."$it.key".status = "synced"
 	}
 	// Preferences template end
-	sendEvent(name: "supportedWindowShadeCommands", value: ["open", "close", "pause"])
+	sendEvent(name: "supportedWindowShadeCommands", value: JsonOutput.toJson(["open", "close", "pause"]))
 }
 
 def updated() {
@@ -227,7 +230,12 @@ def open() {
 }
 
 def pause() {
-	sendHubCommand(encap(zwave.switchMultilevelV3.switchMultilevelStopLevelChange()))
+	def currentShadeState = device.currentState("windowShade").value
+	if (currentShadeState == "opening" || currentShadeState == "closing") {
+		encap(zwave.switchMultilevelV3.switchMultilevelStopLevelChange())
+	} else {
+		encap(zwave.switchMultilevelV3.switchMultilevelGet())
+	}
 }
 
 def setLevelChild(level, childDni) {
@@ -235,20 +243,16 @@ def setLevelChild(level, childDni) {
 }
 
 def setLevel(level) {
-	state.blindsLastCommand = currentLevel > level ? "opening" : "closing"
 	setShadeLevel(level)
 }
 
 def setShadeLevel(level) {
 	log.debug "Setting shade level: ${level}"
-	def currentLevel = Integer.parseInt(device.currentState("shadeLevel").value)
-	state.blindsLastCommand = currentLevel > level ? "opening" : "closing"
-	state.shadeTarget = level
 	encap(zwave.switchMultilevelV3.switchMultilevelSet(value: Math.min(0x63, level)))
 }
 
 def setSlats(level) {
-	def time = (int) (state.timeOfVenetianMovement  * 1.1)
+	def time = (int) (state.timeOfVenetianMovement * 1.1)
 	sendHubCommand([
 			encap(zwave.switchMultilevelV3.switchMultilevelSet(value: Math.min(0x63, level)), 2),
 			"delay ${time}",
@@ -257,7 +261,10 @@ def setSlats(level) {
 }
 
 def refresh() {
-	encap(zwave.switchMultilevelV3.switchMultilevelGet())
+	[
+			encap(zwave.switchMultilevelV3.switchMultilevelGet()),
+			encap(zwave.meterV3.meterGet(scale: 0x00)),
+	]
 }
 
 def ping() {
@@ -313,6 +320,9 @@ def zwaveEvent(physicalgraph.zwave.commands.switchmultilevelv3.SwitchMultilevelR
 }
 
 def zwaveEvent(physicalgraph.zwave.commands.switchmultilevelv3.SwitchMultilevelSet cmd, ep = null) {
+	def currentLevel = Integer.parseInt(device.currentState("shadeLevel").value)
+	state.blindsLastCommand = currentLevel > cmd.value ? "opening" : "closing"
+	state.shadeTarget = cmd.value
 	sendHubCommand(encap(zwave.meterV3.meterGet(scale: 0x02)))
 }
 
@@ -355,11 +365,15 @@ def zwaveEvent(physicalgraph.zwave.commands.meterv3.MeterReport cmd, ep = null) 
 			eventMap.value = Math.round(cmd.scaledMeterValue)
 			eventMap.unit = "W"
 			events += createEvent(eventMap)
-			if (cmd.scaledMeterValue) {
+			if (Math.round(cmd.scaledMeterValue)) {
 				events += createEvent([name: "windowShade", value: state.blindsLastCommand])
 				events += createEvent([name: "shadeLevel", value: state.shadeTarget, displayed: false])
 			} else {
-				events += response(encap(zwave.switchMultilevelV3.switchMultilevelGet()))
+				events += response([
+						encap(zwave.switchMultilevelV3.switchMultilevelGet()),
+						"delay 500",
+						encap(zwave.meterV3.meterGet(scale: 0x00))
+				])
 			}
 		}
 	}
